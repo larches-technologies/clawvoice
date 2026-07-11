@@ -174,6 +174,17 @@ src/
 
 ClawVoice uses minimal usage analytics to understand onboarding, connection reliability, voice reliability, and CarPlay usage. Analytics can be disabled in Settings. The app does not collect prompts, assistant messages, transcripts, audio, gateway URLs, auth tokens, cantonese.ai keys, or device tokens. See [Privacy Policy](https://rvssvl.github.io/iclawd/#privacy-policy) for details.
 
+## Testing
+
+Unit tests cover the pure logic and storage helpers (voice conversation state machine, wake-word matching, voice-provider selection, cantonese.ai request building / voice parsing, language and TTS config). They run in plain Node with a tiny harness that transpiles the TypeScript sources on the fly — no jest-expo or native build required.
+
+```bash
+npm test          # run the test suite
+npm run typecheck # tsc --noEmit
+```
+
+Tests live in `tests/` (`*.test.js`). Every push and pull request runs `typecheck` + `test` via GitHub Actions (`.github/workflows/ci.yml`).
+
 ## Contributing
 
 Contributions are welcome! Please open an issue first to discuss what you'd like to change.
@@ -184,6 +195,9 @@ npx expo start --dev-client
 
 # Run on iOS simulator
 npx expo run:ios
+
+# Before pushing
+npm run typecheck && npm test
 ```
 
 ## License
