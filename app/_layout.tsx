@@ -351,6 +351,10 @@ export default function RootLayout() {
           name="settings"
           options={{ title: 'Settings' }}
         />
+        <Stack.Screen
+          name="voice-picker"
+          options={{ title: 'Choose Voice' }}
+        />
       </Stack>
     </GatewayProvider>
   );

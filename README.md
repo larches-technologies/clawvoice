@@ -5,9 +5,11 @@ ClawVoice for OpenClaw, formerly Iclawd, is a voice-first mobile companion for [
 ## Features
 
 - **Push-to-talk & continuous listening** — tap to speak or let the app listen continuously with automatic silence detection
+- **Voice wake / wake words** — passively listen and activate on a configurable wake phrase ("Hey Claw"), fully hands-free
+- **Background listening & speakerphone** — keep the session alive across app switches and play responses through the loudspeaker
 - **Text chat** — full chat interface with streaming responses
-- **Language selection** — choose the STT/TTS language used by system speech, ElevenLabs, and the gateway locale
-- **ElevenLabs STT + TTS** — optional API transcription and natural-sounding voice responses, with system speech available
+- **Language selection** — Cantonese, Mandarin, or English used by system speech, cantonese.ai, and the gateway locale
+- **cantonese.ai STT + TTS** — optional API transcription and natural-sounding Cantonese voices selected from the cantonese.ai voice library, with system speech available
 - **CarPlay voice mode** — hands-free voice control from supported CarPlay environments
 - **Apple Watch remote** — lightweight companion controls for starting, pausing, and stopping iPhone voice sessions
 - **Siri Shortcuts** — say "Hey Siri, Ask Claw" to jump straight into voice mode
@@ -31,7 +33,7 @@ ClawVoice for OpenClaw, formerly Iclawd, is a voice-first mobile companion for [
 └─────────────────────────┘
 ```
 
-The app connects to your OpenClaw gateway over WebSocket using the v3/v4-compatible protocol with challenge-response device authentication. Voice input is processed via system speech recognition or optional ElevenLabs STT and sent as text to your agent. Responses stream back in real time and are spoken aloud via ElevenLabs or the system voice.
+The app connects to your OpenClaw gateway over WebSocket using the v3/v4-compatible protocol with challenge-response device authentication. Voice input is processed via system speech recognition or optional cantonese.ai STT and sent as text to your agent. Responses stream back in real time and are spoken aloud via cantonese.ai or the system voice.
 
 ## Prerequisites
 
@@ -123,11 +125,13 @@ src/
 
 **Gateway connection** is configured in-app (Settings or first-launch flow). Enter your OpenClaw gateway URL and auth token.
 
-**ElevenLabs TTS** (optional) can be enabled in Settings by providing your API key. Without it, the app uses the built-in system voice.
+**cantonese.ai TTS/STT** (optional) can be enabled in Settings by providing your API key. Pick a voice from the built-in voice browser (or paste any `voice_id` from cantonese.ai/voices), and tune model version, speed, and pitch. Without a key, the app uses the built-in system voice.
 
-**Voice language** can be selected in Settings. The selected language is used for system speech recognition, system TTS, ElevenLabs STT/TTS language hints, and the OpenClaw gateway locale.
+**Voice language** can be selected in Settings (Cantonese, Mandarin, English). The selected language is used for system speech recognition, system TTS, cantonese.ai STT/TTS language, and the OpenClaw gateway locale.
 
-**Siri Shortcuts** can be added from Settings to enable "Hey Siri, Ask Claw".
+**Hands-free** options in Settings enable voice wake (with editable wake words), background listening, and speakerphone output.
+
+**Siri Shortcuts** can be added from Settings to enable "Hey Siri, Clawd Voice".
 
 ## Tech Stack
 
@@ -136,8 +140,8 @@ src/
 | Framework | React Native (Expo 54) + React 19 |
 | Language | TypeScript 5.9 |
 | Navigation | Expo Router |
-| Voice Input | @react-native-voice/voice / ElevenLabs STT |
-| Voice Output | ElevenLabs API / native system TTS |
+| Voice Input | @react-native-voice/voice / cantonese.ai STT |
+| Voice Output | cantonese.ai API / native system TTS |
 | Animation | React Native Reanimated |
 | Networking | WebSocket (OpenClaw Gateway v3 protocol) |
 | Auth | Ed25519 signing (tweetnacl) |
@@ -148,9 +152,12 @@ src/
 - [x] Gateway connection with device authentication
 - [x] Push-to-talk voice chat
 - [x] Continuous listening with silence detection
+- [x] Voice wake / configurable wake words
+- [x] Background listening & speakerphone
 - [x] Text chat with streaming
-- [x] ElevenLabs STT/TTS + system speech
-- [x] Voice language selection
+- [x] cantonese.ai STT/TTS + system speech
+- [x] Voice selection from the cantonese.ai voice library
+- [x] Voice language selection (Cantonese / Mandarin / English)
 - [x] Siri Shortcuts
 - [x] OTA updates & push notifications
 - [x] CarPlay voice mode
@@ -162,7 +169,7 @@ src/
 
 ## Privacy
 
-ClawVoice uses minimal usage analytics to understand onboarding, connection reliability, voice reliability, and CarPlay usage. Analytics can be disabled in Settings. The app does not collect prompts, assistant messages, transcripts, audio, gateway URLs, auth tokens, ElevenLabs keys, or device tokens. See [Privacy Policy](https://rvssvl.github.io/iclawd/#privacy-policy) for details.
+ClawVoice uses minimal usage analytics to understand onboarding, connection reliability, voice reliability, and CarPlay usage. Analytics can be disabled in Settings. The app does not collect prompts, assistant messages, transcripts, audio, gateway URLs, auth tokens, cantonese.ai keys, or device tokens. See [Privacy Policy](https://rvssvl.github.io/iclawd/#privacy-policy) for details.
 
 ## Contributing
 

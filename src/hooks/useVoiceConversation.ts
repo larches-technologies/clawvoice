@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { useVoice } from '@/hooks/useVoice';
@@ -9,8 +9,17 @@ import {
   initialVoiceConversationState,
   voiceConversationReducer,
 } from '@/hooks/voiceConversationState';
+import {
+  DEFAULT_HANDS_FREE_SETTINGS,
+  getHandsFreeSettings,
+  matchWakeWord,
+  type HandsFreeSettings,
+} from '@/services/WakeWordConfig';
 
 const QUICK_MANUAL_STOP_MS = 700;
+// After hearing a bare wake word ("Hey Claw"), keep the mic hot for a short window
+// so the user's follow-up command is treated as the request.
+const WAKE_FOLLOWUP_MS = 8000;
 
 interface Params {
   connectionState: ConnectionState;
@@ -48,7 +57,24 @@ export function useVoiceConversation({
   const lastSentUtteranceRef = useRef<{ text: string; at: number } | null>(null);
   const listeningStartedAtRef = useRef<number | null>(null);
   const finalTranscriptReceivedRef = useRef(false);
+  const handsFreeRef = useRef<HandsFreeSettings>(DEFAULT_HANDS_FREE_SETTINGS);
+  const awakeUntilRef = useRef(0);
+  const wasActiveSessionRef = useRef(false);
+  const [wakeEnabled, setWakeEnabled] = useState(false);
   stateRef.current = state;
+
+  const refreshHandsFree = useCallback(() => {
+    getHandsFreeSettings()
+      .then((settings) => {
+        handsFreeRef.current = settings;
+        setWakeEnabled(settings.wakeEnabled);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshHandsFree();
+  }, [refreshHandsFree]);
 
   const pulse = useCallback((style: Haptics.ImpactFeedbackStyle) => {
     Haptics.impactAsync(style);
@@ -82,12 +108,42 @@ export function useVoiceConversation({
 
   useEffect(() => {
     setOnFinalTranscript(async (text) => {
-      const utterance = text.trim();
+      let utterance = text.trim();
       if (!utterance) return;
       finalTranscriptReceivedRef.current = true;
 
-      const normalized = utterance.toLocaleLowerCase();
       const now = Date.now();
+      const handsFree = handsFreeRef.current;
+
+      // Software wake word: while armed, ignore anything that isn't preceded by a
+      // wake phrase. Once woken, the follow-up (or the words after the phrase) is the
+      // command.
+      if (handsFree.wakeEnabled) {
+        const stillAwake = awakeUntilRef.current > now;
+        if (!stillAwake) {
+          const { matched, remainder } = matchWakeWord(utterance, handsFree.wakeWords);
+          if (!matched) {
+            // Not addressed to us — stay armed and keep listening.
+            dispatch({ type: 'RESUME_MIC' });
+            return;
+          }
+
+          track('voice_wake_detected', { provider: inputProvider });
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+
+          if (!remainder) {
+            // Bare wake word — open a short window for the command and keep listening.
+            awakeUntilRef.current = now + WAKE_FOLLOWUP_MS;
+            dispatch({ type: 'RESUME_MIC' });
+            return;
+          }
+          utterance = remainder;
+        }
+        // Consume the awake window once we actually send something.
+        awakeUntilRef.current = 0;
+      }
+
+      const normalized = utterance.toLocaleLowerCase();
       const lastSent = lastSentUtteranceRef.current;
       if (
         inFlightUtteranceRef.current
@@ -110,7 +166,7 @@ export function useVoiceConversation({
         });
       }
     });
-  }, [sendMessage, setOnFinalTranscript]);
+  }, [inputProvider, sendMessage, setOnFinalTranscript]);
 
   useEffect(() => {
     if (awaitingResponse) {
@@ -153,19 +209,29 @@ export function useVoiceConversation({
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active') {
+        refreshHandsFree();
         dispatch({ type: 'FOREGROUND' });
         if (connectionState === 'disconnected') {
           reconnect();
         }
+        // If the user backgrounded mid-session with background listening on, re-arm
+        // the mic automatically instead of making them tap again.
+        if (handsFreeRef.current.backgroundListening && wasActiveSessionRef.current) {
+          dispatch({ type: 'START_SESSION' });
+        }
+        wasActiveSessionRef.current = false;
         return;
       }
 
+      wasActiveSessionRef.current = stateRef.current.sessionEnabled;
       dispatch({ type: 'BACKGROUND' });
+      // Keep the audio session alive so agent playback can continue in the
+      // background (voice capture itself is paused by the OS; we resume on return).
       suspend({ keepPlayback: true });
     });
 
     return () => sub.remove();
-  }, [connectionState, reconnect, suspend, voiceState]);
+  }, [connectionState, reconnect, refreshHandsFree, suspend, voiceState]);
 
   useEffect(() => {
     const shouldListen =
@@ -205,6 +271,28 @@ export function useVoiceConversation({
       dispatch({ type: 'START_SESSION' });
     }
   }, [connectionState, state.foreground, state.sessionEnabled, state.status]);
+
+  // Voice wake: when a wake word is configured, automatically arm the mic so the app
+  // is passively listening for the wake phrase without requiring a tap.
+  useEffect(() => {
+    if (
+      !wakeEnabled
+      || connectionState !== 'connected'
+      || !state.foreground
+      || AppState.currentState !== 'active'
+      || state.status !== 'paused'
+      || state.sessionEnabled
+      || Boolean(state.error)
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (stateRef.current.status === 'paused' && !stateRef.current.sessionEnabled) {
+        dispatch({ type: 'START_SESSION' });
+      }
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [connectionState, state.error, state.foreground, state.sessionEnabled, state.status, wakeEnabled]);
 
   const toggleMic = useCallback(async () => {
     if (AppState.currentState !== 'active') {
@@ -294,10 +382,14 @@ export function useVoiceConversation({
         return state.error || (connectionState === 'connected' ? 'Tap to listen.' : 'Tap to reconnect');
       case 'starting':
         return 'Starting microphone...';
-      case 'listening':
-        return (state.transcript || transcript).trim()
-          ? 'Tap to send.'
-          : 'Listening. Pause when needed.';
+      case 'listening': {
+        if ((state.transcript || transcript).trim()) return 'Tap to send.';
+        if (wakeEnabled && awakeUntilRef.current <= Date.now()) {
+          const phrase = handsFreeRef.current.wakeWords[0];
+          return phrase ? `Say "${phrase}" to talk.` : 'Listening for your wake word.';
+        }
+        return 'Listening. Pause when needed.';
+      }
       case 'finalizing':
         return 'Sending...';
       case 'awaitingAgent':
