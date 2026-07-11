@@ -8,8 +8,10 @@ ClawVoice for OpenClaw, formerly Iclawd, is a voice-first mobile companion for [
 - **Voice wake / wake words** — passively listen and activate on a configurable wake phrase ("Hey Claw"), fully hands-free
 - **Background listening & speakerphone** — keep the session alive across app switches and play responses through the loudspeaker
 - **Text chat** — full chat interface with streaming responses
-- **Language selection** — Cantonese, Mandarin, or English used by system speech, cantonese.ai, and the gateway locale
-- **cantonese.ai STT + TTS** — optional API transcription and natural-sounding Cantonese voices selected from the cantonese.ai voice library, with system speech available
+- **Language selection** — Cantonese, Mandarin, or English used by system speech, the speech provider, and the gateway locale
+- **Choose your voice provider** — cantonese.ai, ElevenLabs, or the built-in system voice for both TTS and STT
+- **cantonese.ai STT + TTS** — natural-sounding Cantonese voices selected from the cantonese.ai voice library
+- **ElevenLabs STT + TTS** — still supported as an alternative provider
 - **CarPlay voice mode** — hands-free voice control from supported CarPlay environments
 - **Apple Watch remote** — lightweight companion controls for starting, pausing, and stopping iPhone voice sessions
 - **Siri Shortcuts** — say "Hey Siri, Ask Claw" to jump straight into voice mode
@@ -125,7 +127,7 @@ src/
 
 **Gateway connection** is configured in-app (Settings or first-launch flow). Enter your OpenClaw gateway URL and auth token.
 
-**cantonese.ai TTS/STT** (optional) can be enabled in Settings by providing your API key. Pick a voice from the built-in voice browser (or paste any `voice_id` from cantonese.ai/voices), and tune model version, speed, and pitch. Without a key, the app uses the built-in system voice.
+**Voice provider** is chosen in Settings: **cantonese.ai**, **ElevenLabs**, or the built-in **System Voice**. For cantonese.ai, add your API key and pick a voice from the built-in voice browser (or paste any `voice_id` from cantonese.ai/voices), then tune model version, speed, and pitch. For ElevenLabs, add your key and set the voice ID, speed, stability, and similarity. Without an API key the app falls back to the system voice.
 
 **Voice language** can be selected in Settings (Cantonese, Mandarin, English). The selected language is used for system speech recognition, system TTS, cantonese.ai STT/TTS language, and the OpenClaw gateway locale.
 
@@ -140,8 +142,8 @@ src/
 | Framework | React Native (Expo 54) + React 19 |
 | Language | TypeScript 5.9 |
 | Navigation | Expo Router |
-| Voice Input | @react-native-voice/voice / cantonese.ai STT |
-| Voice Output | cantonese.ai API / native system TTS |
+| Voice Input | @react-native-voice/voice / cantonese.ai / ElevenLabs STT |
+| Voice Output | cantonese.ai / ElevenLabs API / native system TTS |
 | Animation | React Native Reanimated |
 | Networking | WebSocket (OpenClaw Gateway v3 protocol) |
 | Auth | Ed25519 signing (tweetnacl) |
@@ -155,6 +157,7 @@ src/
 - [x] Voice wake / configurable wake words
 - [x] Background listening & speakerphone
 - [x] Text chat with streaming
+- [x] Selectable voice provider (cantonese.ai / ElevenLabs / system)
 - [x] cantonese.ai STT/TTS + system speech
 - [x] Voice selection from the cantonese.ai voice library
 - [x] Voice language selection (Cantonese / Mandarin / English)

@@ -28,6 +28,28 @@ import {
 } from '@/services/CantoneseAIConfig';
 import type { CantoneseAiModel } from '@/services/CantoneseAIConfig';
 import {
+  DEFAULT_ELEVENLABS_TTS_SIMILARITY,
+  DEFAULT_ELEVENLABS_TTS_SPEED,
+  DEFAULT_ELEVENLABS_TTS_STABILITY,
+  DEFAULT_ELEVENLABS_VOICE_ID,
+  ELEVENLABS_KEY,
+  ELEVENLABS_TTS_SIMILARITY,
+  ELEVENLABS_TTS_SPEED,
+  ELEVENLABS_TTS_STABILITY,
+  ELEVENLABS_TTS_VOICE_ID,
+  getElevenLabsTtsSettings,
+  isElevenLabsSttEnabled,
+  setElevenLabsSttEnabled,
+  saveElevenLabsTtsSetting,
+} from '@/services/ElevenLabsConfig';
+import {
+  getVoiceProvider,
+  getVoiceProviderLabel,
+  setVoiceProvider,
+  VOICE_PROVIDER_OPTIONS,
+  type VoiceProvider,
+} from '@/services/VoiceProviderConfig';
+import {
   DEFAULT_VOICE_LANGUAGE,
   getVoiceLanguage,
   setVoiceLanguage,
@@ -51,9 +73,17 @@ const OTA_CHANNEL = 'production';
 export default function SettingsScreen() {
   const router = useRouter();
   const [config, setConfig] = useState<GatewayConfig | null>(null);
+  const [provider, setProvider] = useState<VoiceProvider>('cantoneseai');
   const [cantoneseKey, setCantoneseKey] = useState('');
+  const [elevenKey, setElevenKey] = useState('');
   const [editingKey, setEditingKey] = useState(false);
   const [keyInput, setKeyInput] = useState('');
+  // ElevenLabs voice settings (only shown when ElevenLabs is the selected provider).
+  const [elevenStt, setElevenStt] = useState(false);
+  const [elevenVoiceId, setElevenVoiceId] = useState(DEFAULT_ELEVENLABS_VOICE_ID);
+  const [elevenSpeed, setElevenSpeed] = useState(String(DEFAULT_ELEVENLABS_TTS_SPEED));
+  const [elevenStability, setElevenStability] = useState(String(DEFAULT_ELEVENLABS_TTS_STABILITY));
+  const [elevenSimilarity, setElevenSimilarity] = useState(String(DEFAULT_ELEVENLABS_TTS_SIMILARITY));
   const [autoPronounce, setAutoPronounce] = useState(true);
   const [notifications, setNotifications] = useState(true);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -78,11 +108,20 @@ export default function SettingsScreen() {
       setTtsSpeed(String(settings.speed));
       setTtsPitch(String(settings.pitch));
     });
+    getElevenLabsTtsSettings().then((settings) => {
+      setElevenVoiceId(settings.voiceId);
+      setElevenSpeed(String(settings.speed));
+      setElevenStability(String(settings.stability));
+      setElevenSimilarity(String(settings.similarityBoost));
+    });
   }, []);
 
   useEffect(() => {
     getGatewayConfig().then(setConfig);
+    getVoiceProvider().then(setProvider);
     getCantoneseAiKey().then((k) => { if (k) setCantoneseKey(k); });
+    SecureStore.getItemAsync(ELEVENLABS_KEY).then((k) => { if (k) setElevenKey(k); });
+    isElevenLabsSttEnabled().then(setElevenStt);
     loadVoiceSettings();
     getVoiceLanguage().then(setVoiceLanguageState);
     getHandsFreeSettings().then((hf) => {
@@ -122,20 +161,37 @@ export default function SettingsScreen() {
     );
   }
 
+  const isEleven = provider === 'elevenlabs';
+  const activeKey = isEleven ? elevenKey : cantoneseKey;
+  const activeStt = isEleven ? elevenStt : cantoneseStt;
+  const providerName = isEleven ? 'ElevenLabs' : 'cantonese.ai';
+
   function handleEditKey() {
-    setKeyInput(cantoneseKey);
+    setKeyInput(activeKey);
     setEditingKey(true);
   }
 
   async function handleSaveKey() {
-    await saveCantoneseAiKey(keyInput);
-    setCantoneseKey(keyInput.trim());
-    if (keyInput.trim()) {
-      track('cantoneseai_key_added', { screen: 'settings' });
-    }
-    if (!keyInput.trim()) {
-      await setCantoneseAiSttEnabled(false);
-      setCantoneseStt(false);
+    const trimmed = keyInput.trim();
+    if (isEleven) {
+      if (trimmed) {
+        await SecureStore.setItemAsync(ELEVENLABS_KEY, trimmed);
+        track('cantoneseai_key_added', { screen: 'settings' });
+      } else {
+        await SecureStore.deleteItemAsync(ELEVENLABS_KEY);
+        await setElevenLabsSttEnabled(false);
+        setElevenStt(false);
+      }
+      setElevenKey(trimmed);
+    } else {
+      await saveCantoneseAiKey(keyInput);
+      if (trimmed) {
+        track('cantoneseai_key_added', { screen: 'settings' });
+      } else {
+        await setCantoneseAiSttEnabled(false);
+        setCantoneseStt(false);
+      }
+      setCantoneseKey(trimmed);
     }
     setEditingKey(false);
   }
@@ -146,19 +202,52 @@ export default function SettingsScreen() {
   }
 
   function handleClearKey() {
-    Alert.alert('Remove API Key', 'This will remove your cantonese.ai API key.', [
+    Alert.alert('Remove API Key', `This will remove your ${providerName} API key.`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Remove',
         style: 'destructive',
         onPress: async () => {
-          await saveCantoneseAiKey('');
-          await setCantoneseAiSttEnabled(false);
-          setCantoneseKey('');
-          setCantoneseStt(false);
+          if (isEleven) {
+            await SecureStore.deleteItemAsync(ELEVENLABS_KEY);
+            await setElevenLabsSttEnabled(false);
+            setElevenKey('');
+            setElevenStt(false);
+          } else {
+            await saveCantoneseAiKey('');
+            await setCantoneseAiSttEnabled(false);
+            setCantoneseKey('');
+            setCantoneseStt(false);
+          }
         },
       },
     ]);
+  }
+
+  async function handleSelectProvider() {
+    const apply = (next: VoiceProvider) => {
+      setProvider(next);
+      setVoiceProvider(next);
+      track('cantoneseai_tts_setting_changed', { screen: 'settings', setting: 'provider' });
+    };
+
+    if (Platform.OS === 'ios') {
+      const options = [...VOICE_PROVIDER_OPTIONS.map((o) => o.label), 'Cancel'];
+      const cancelButtonIndex = options.length - 1;
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options, cancelButtonIndex, userInterfaceStyle: 'dark', title: 'Voice Provider' },
+        (index) => {
+          if (index === cancelButtonIndex) return;
+          const next = VOICE_PROVIDER_OPTIONS[index];
+          if (next) apply(next.value);
+        },
+      );
+      return;
+    }
+
+    const currentIndex = VOICE_PROVIDER_OPTIONS.findIndex((o) => o.value === provider);
+    const next = VOICE_PROVIDER_OPTIONS[(currentIndex + 1) % VOICE_PROVIDER_OPTIONS.length];
+    apply(next.value);
   }
 
   async function toggleAutoPronounce(value: boolean) {
@@ -175,6 +264,18 @@ export default function SettingsScreen() {
     setCantoneseStt(value);
     await setCantoneseAiSttEnabled(value);
     track('cantoneseai_stt_enabled', { screen: 'settings', enabled: value });
+  }
+
+  async function toggleElevenStt(value: boolean) {
+    setElevenStt(value);
+    await setElevenLabsSttEnabled(value);
+    track('cantoneseai_stt_enabled', { screen: 'settings', enabled: value });
+  }
+
+  async function saveElevenSetting(key: string, value: string, setValue: (value: string) => void) {
+    await saveElevenLabsTtsSetting(key, value);
+    setValue(value.trim());
+    track('cantoneseai_tts_setting_changed', { screen: 'settings', setting: key });
   }
 
   async function toggleWakeEnabled(value: boolean) {
@@ -352,14 +453,22 @@ export default function SettingsScreen() {
       {/* Voice Section */}
       <Text style={styles.sectionTitle}>Voice</Text>
       <View style={styles.card}>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>Text-to-Speech</Text>
-          <Text style={styles.rowValue}>{cantoneseKey ? 'cantonese.ai' : 'System Voice'}</Text>
-        </View>
+        <Pressable style={styles.row} onPress={handleSelectProvider}>
+          <View style={styles.rowText}>
+            <Text style={styles.rowLabel}>Voice Provider</Text>
+            <Text style={styles.rowDescription}>Used for text-to-speech and (optionally) speech-to-text.</Text>
+          </View>
+          <View style={styles.keyConfigured}>
+            <Text style={styles.rowValue}>{getVoiceProviderLabel(provider)}</Text>
+            <Ionicons name="chevron-expand" size={16} color={colors.textSecondary} />
+          </View>
+        </Pressable>
         <View style={styles.divider} />
         <View style={styles.row}>
           <Text style={styles.rowLabel}>Speech-to-Text</Text>
-          <Text style={styles.rowValue}>{cantoneseKey && cantoneseStt ? 'cantonese.ai' : 'System'}</Text>
+          <Text style={styles.rowValue}>
+            {provider !== 'system' && activeKey && activeStt ? providerName : 'System'}
+          </Text>
         </View>
         <View style={styles.divider} />
         <Pressable style={styles.row} onPress={handleSelectVoiceLanguage}>
@@ -369,47 +478,53 @@ export default function SettingsScreen() {
           </View>
           <Text style={styles.rowValue}>{voiceLanguage.label}</Text>
         </Pressable>
-        <View style={styles.divider} />
-        {editingKey ? (
-          <View style={styles.keyEditContainer}>
-            <TextInput
-              style={styles.keyInput}
-              value={keyInput}
-              onChangeText={setKeyInput}
-              placeholder="cantonese.ai API key"
-              placeholderTextColor={colors.textMuted}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus
-              secureTextEntry
-            />
-            <View style={styles.keyActions}>
-              <Pressable style={styles.keyButton} onPress={handleCancelKey}>
-                <Text style={styles.keyButtonCancel}>Cancel</Text>
-              </Pressable>
-              <Pressable style={[styles.keyButton, styles.keySaveButton]} onPress={handleSaveKey}>
-                <Text style={styles.keyButtonSave}>Save</Text>
-              </Pressable>
-            </View>
-          </View>
-        ) : (
-          <Pressable style={styles.row} onPress={cantoneseKey ? handleClearKey : handleEditKey}>
-            <Text style={styles.rowLabel}>cantonese.ai API Key</Text>
-            {cantoneseKey ? (
-              <View style={styles.keyConfigured}>
-                <Text style={styles.rowValue}>
-                  {'•'.repeat(4)}{cantoneseKey.slice(-4)}
-                </Text>
-                <Pressable onPress={handleEditKey} hitSlop={8}>
-                  <Ionicons name="pencil" size={14} color={colors.textSecondary} />
-                </Pressable>
+
+        {provider !== 'system' && (
+          <>
+            <View style={styles.divider} />
+            {editingKey ? (
+              <View style={styles.keyEditContainer}>
+                <TextInput
+                  style={styles.keyInput}
+                  value={keyInput}
+                  onChangeText={setKeyInput}
+                  placeholder={`${providerName} API key`}
+                  placeholderTextColor={colors.textMuted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                  secureTextEntry
+                />
+                <View style={styles.keyActions}>
+                  <Pressable style={styles.keyButton} onPress={handleCancelKey}>
+                    <Text style={styles.keyButtonCancel}>Cancel</Text>
+                  </Pressable>
+                  <Pressable style={[styles.keyButton, styles.keySaveButton]} onPress={handleSaveKey}>
+                    <Text style={styles.keyButtonSave}>Save</Text>
+                  </Pressable>
+                </View>
               </View>
             ) : (
-              <Text style={[styles.rowValue, { color: colors.primary }]}>Configure</Text>
+              <Pressable style={styles.row} onPress={activeKey ? handleClearKey : handleEditKey}>
+                <Text style={styles.rowLabel}>{providerName} API Key</Text>
+                {activeKey ? (
+                  <View style={styles.keyConfigured}>
+                    <Text style={styles.rowValue}>
+                      {'•'.repeat(4)}{activeKey.slice(-4)}
+                    </Text>
+                    <Pressable onPress={handleEditKey} hitSlop={8}>
+                      <Ionicons name="pencil" size={14} color={colors.textSecondary} />
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Text style={[styles.rowValue, { color: colors.primary }]}>Configure</Text>
+                )}
+              </Pressable>
             )}
-          </Pressable>
+          </>
         )}
-        {cantoneseKey ? (
+
+        {provider === 'cantoneseai' && cantoneseKey ? (
           <>
             <View style={styles.divider} />
             <View style={styles.row}>
@@ -465,6 +580,76 @@ export default function SettingsScreen() {
                 onBlur={() => saveTtsSetting(CANTONESEAI_TTS_PITCH, ttsPitch, setTtsPitch)}
                 keyboardType="numbers-and-punctuation"
                 placeholder="0"
+                placeholderTextColor={colors.textMuted}
+              />
+            </View>
+          </>
+        ) : null}
+
+        {provider === 'elevenlabs' && elevenKey ? (
+          <>
+            <View style={styles.divider} />
+            <View style={styles.row}>
+              <View style={styles.rowText}>
+                <Text style={styles.rowLabel}>ElevenLabs STT</Text>
+                <Text style={styles.rowDescription}>Use API transcription for voice and dictation.</Text>
+              </View>
+              <Switch
+                value={elevenStt}
+                onValueChange={toggleElevenStt}
+                trackColor={{ false: colors.border, true: colors.primary }}
+              />
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.settingInputRow}>
+              <Text style={styles.rowLabel}>Voice ID</Text>
+              <TextInput
+                style={styles.inlineInput}
+                value={elevenVoiceId}
+                onChangeText={setElevenVoiceId}
+                onBlur={() => saveElevenSetting(ELEVENLABS_TTS_VOICE_ID, elevenVoiceId, setElevenVoiceId)}
+                placeholder={DEFAULT_ELEVENLABS_VOICE_ID}
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.settingInputRow}>
+              <Text style={styles.rowLabel}>Speed</Text>
+              <TextInput
+                style={styles.numberInput}
+                value={elevenSpeed}
+                onChangeText={setElevenSpeed}
+                onBlur={() => saveElevenSetting(ELEVENLABS_TTS_SPEED, elevenSpeed, setElevenSpeed)}
+                keyboardType="decimal-pad"
+                placeholder="1"
+                placeholderTextColor={colors.textMuted}
+              />
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.settingInputRow}>
+              <Text style={styles.rowLabel}>Stability</Text>
+              <TextInput
+                style={styles.numberInput}
+                value={elevenStability}
+                onChangeText={setElevenStability}
+                onBlur={() => saveElevenSetting(ELEVENLABS_TTS_STABILITY, elevenStability, setElevenStability)}
+                keyboardType="decimal-pad"
+                placeholder="0.5"
+                placeholderTextColor={colors.textMuted}
+              />
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.settingInputRow}>
+              <Text style={styles.rowLabel}>Similarity</Text>
+              <TextInput
+                style={styles.numberInput}
+                value={elevenSimilarity}
+                onChangeText={setElevenSimilarity}
+                onBlur={() => saveElevenSetting(ELEVENLABS_TTS_SIMILARITY, elevenSimilarity, setElevenSimilarity)}
+                keyboardType="decimal-pad"
+                placeholder="0.75"
                 placeholderTextColor={colors.textMuted}
               />
             </View>

@@ -4,12 +4,12 @@ _Last reviewed: 2026-07 (cantonese.ai + hands-free update)_
 
 ## Summary
 
-ClawVoice **already ships CarPlay voice support**, and it continues to work after the
-migration from ElevenLabs to cantonese.ai. CarPlay voice mode is driven by the same
-`VoiceEngine` / `useVoiceConversation` pipeline as the phone UI, so swapping the
-speech provider under the hood required no CarPlay-specific changes — CarPlay now
-speaks and transcribes through cantonese.ai automatically whenever a key is
-configured.
+ClawVoice **already ships CarPlay voice support**, and it continues to work after
+adding cantonese.ai alongside ElevenLabs. CarPlay voice mode is driven by the same
+`VoiceEngine` / `useVoiceConversation` pipeline as the phone UI, so adding the extra
+speech provider required no CarPlay-specific changes — CarPlay speaks and transcribes
+through whichever provider the user selects in Settings (cantonese.ai, ElevenLabs, or
+system).
 
 ## How it is wired
 
@@ -31,8 +31,9 @@ production build will run in CarPlay.
 
 ## Behaviour with the new features
 
-- **cantonese.ai TTS/STT** — used transparently in CarPlay. The audio session is set
-  to `DuckOthers` during playback so car audio dims rather than stops.
+- **Voice provider (cantonese.ai / ElevenLabs / system)** — used transparently in
+  CarPlay based on the Settings choice. The audio session is set to `DuckOthers`
+  during playback so car audio dims rather than stops.
 - **Speakerphone** — in CarPlay, output is already routed to the car's speakers by
   the system, so the in-app speakerphone toggle is effectively a no-op there; it
   matters for phone/desk hands-free use. It does no harm in CarPlay.
