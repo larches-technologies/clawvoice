@@ -57,9 +57,14 @@ const ALLOWED_EVENTS = new Set([
   'watch_voice_paused',
   'watch_audio_stopped',
   'watch_connection_failed',
-  'elevenlabs_key_added',
-  'elevenlabs_stt_enabled',
-  'elevenlabs_tts_setting_changed',
+  'cantoneseai_key_added',
+  'cantoneseai_stt_enabled',
+  'cantoneseai_tts_setting_changed',
+  'cantoneseai_voice_selected',
+  'voice_wake_enabled',
+  'voice_wake_detected',
+  'background_listening_enabled',
+  'speakerphone_enabled',
   'siri_shortcut_suggested',
   'siri_shortcut_failed',
 ]);
@@ -206,7 +211,7 @@ export function categorizeError(error: unknown): string {
     || normalized.includes('clear speech')
     || normalized.includes('hear enough speech')
   ) return 'stt_no_match';
-  if (normalized.includes('tts') || normalized.includes('elevenlabs') || normalized.includes('speech')) return 'tts_provider';
+  if (normalized.includes('tts') || normalized.includes('cantonese') || normalized.includes('speech')) return 'tts_provider';
   return 'unknown';
 }
 

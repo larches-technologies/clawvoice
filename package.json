@@ -7,7 +7,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "test": "node test-voice-conversation-state.js",
+    "test": "node tests/index.js",
+    "typecheck": "tsc --noEmit",
     "postinstall": "patch-package"
   },
   "dependencies": {

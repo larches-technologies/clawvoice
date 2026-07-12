@@ -29,7 +29,7 @@
       "buildNumber": "14",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "ClawVoice needs microphone access for voice conversations with your OpenClaw agent.",
+        "NSMicrophoneUsageDescription": "ClawVoice needs microphone access for voice conversations, hands-free wake words, and speech-to-text with your OpenClaw agent.",
         "NSSpeechRecognitionUsageDescription": "ClawVoice uses speech recognition to convert your voice to text.",
         "NSCameraUsageDescription": "ClawVoice uses the camera to scan QR codes for gateway connection.",
         "NSPhotoLibraryUsageDescription": "ClawVoice may access your photo library to share images with your AI agent.",
@@ -49,7 +49,8 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "RECORD_AUDIO",
-        "CAMERA"
+        "CAMERA",
+        "MODIFY_AUDIO_SETTINGS"
       ]
     },
     "extra": {

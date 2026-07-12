@@ -8,6 +8,18 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from '@/services/SafeSecureStore';
 import Tts, { TtsEvent } from 'react-native-tts';
 import {
+  CANTONESEAI_KEY,
+  CANTONESEAI_STT_ENABLED,
+  getCantoneseAiTtsSettings,
+  isCantoneseAiSttEnabled,
+} from '@/services/CantoneseAIConfig';
+import {
+  CANTONESEAI_TTS_URL,
+  CantoneseAiSpeechError,
+  buildCantoneseTtsBody,
+  transcribeWithCantoneseAI,
+} from '@/services/CantoneseAISpeechService';
+import {
   ELEVENLABS_KEY,
   ELEVENLABS_STT_ENABLED,
   getElevenLabsTtsSettings,
@@ -15,10 +27,12 @@ import {
 } from '@/services/ElevenLabsConfig';
 import { ElevenLabsSpeechError, transcribeWithElevenLabs } from '@/services/ElevenLabsSpeechService';
 import { getVoiceLanguage } from '@/services/VoiceLanguageConfig';
+import { isSpeakerphoneEnabled } from '@/services/WakeWordConfig';
+import { getVoiceProvider } from '@/services/VoiceProviderConfig';
 import { categorizeError, track } from '@/services/AnalyticsService';
 
 export type VoiceState = 'idle' | 'listening' | 'thinking' | 'preparingAudio' | 'speaking';
-export type VoiceInputProvider = 'system' | 'elevenlabs';
+export type VoiceInputProvider = 'system' | 'elevenlabs' | 'cantoneseai';
 
 type StateListener = (state: VoiceState) => void;
 type InputProviderListener = (provider: VoiceInputProvider) => void;
@@ -29,8 +43,8 @@ interface SuspendOptions {
 }
 
 const ELEVENLABS_MODEL = 'eleven_flash_v2_5';
-const ELEVENLABS_AUTH_FAILURE = /HTTP\s+(401|403)\b/i;
-const ELEVENLABS_TTS_TIMEOUT_MS = 30000;
+const CANTONESEAI_AUTH_FAILURE = /HTTP\s+(401|403)\b/i;
+const CANTONESEAI_TTS_TIMEOUT_MS = 30000;
 const QUICK_MANUAL_STOP_MS = 700;
 const NO_SPEECH_TIMEOUT_MS = 6000;
 const STUCK_LISTENING_GUARD_MS = 30000;
@@ -127,7 +141,7 @@ class VoiceEngineService {
   private static STT_SILENCE_THRESHOLD_DB = -45;
   private static STT_SPEECH_THRESHOLD_DB = -36;
   private recording: Audio.Recording | null = null;
-  private recordingProvider: 'elevenlabs' | null = null;
+  private recordingProvider: 'elevenlabs' | 'cantoneseai' | null = null;
   private recordingHeardSpeech = false;
   private recordingSilentSince = 0;
   private transcriptionInProgress = false;
@@ -209,8 +223,13 @@ class VoiceEngineService {
 
       await this.stopRecognition('cancel');
 
-      if (await isElevenLabsSttEnabled()) {
-        await this.startElevenLabsRecording();
+      const provider = await getVoiceProvider();
+      if (provider === 'cantoneseai' && await isCantoneseAiSttEnabled()) {
+        await this.startApiRecording('cantoneseai');
+        return;
+      }
+      if (provider === 'elevenlabs' && await isElevenLabsSttEnabled()) {
+        await this.startApiRecording('elevenlabs');
         return;
       }
 
@@ -247,7 +266,7 @@ class VoiceEngineService {
 
       if (elapsed < QUICK_MANUAL_STOP_MS) {
         this.latestTranscript = '';
-        await this.finishElevenLabsRecording('cancel');
+        await this.finishApiRecording('cancel');
         await this.stopRecognition('cancel');
         if (this._state === 'listening') {
           this.setState('idle');
@@ -255,8 +274,8 @@ class VoiceEngineService {
         return;
       }
 
-      if (this.recordingProvider === 'elevenlabs' || this.recording) {
-        await this.finishElevenLabsRecording('manual');
+      if (this.recordingProvider !== null || this.recording) {
+        await this.finishApiRecording('manual');
         return;
       }
       if (this.latestTranscript.trim()) {
@@ -275,13 +294,24 @@ class VoiceEngineService {
     await this.prepareForPlayback();
     this.setState('preparingAudio');
 
-    const elevenLabsKey = await SecureStore.getItemAsync(ELEVENLABS_KEY);
-    console.log('[VoiceEngine] speak() — ElevenLabs:', elevenLabsKey ? 'configured' : 'not set');
-    if (elevenLabsKey) {
-      await this.speakWithElevenLabs(text, elevenLabsKey);
-    } else {
-      await this.speakWithSystem(text);
+    const provider = await getVoiceProvider();
+    if (provider === 'cantoneseai') {
+      const cantoneseKey = await SecureStore.getItemAsync(CANTONESEAI_KEY);
+      console.log('[VoiceEngine] speak() — cantonese.ai:', cantoneseKey ? 'configured' : 'not set');
+      if (cantoneseKey) {
+        await this.speakWithCantoneseAI(text, cantoneseKey);
+        return;
+      }
+    } else if (provider === 'elevenlabs') {
+      const elevenKey = await SecureStore.getItemAsync(ELEVENLABS_KEY);
+      console.log('[VoiceEngine] speak() — ElevenLabs:', elevenKey ? 'configured' : 'not set');
+      if (elevenKey) {
+        await this.speakWithElevenLabs(text, elevenKey);
+        return;
+      }
     }
+
+    await this.speakWithSystem(text);
   }
 
   private async speakWithSystem(text: string): Promise<void> {
@@ -390,6 +420,7 @@ class VoiceEngineService {
     }
   }
 
+  private cantoneseFailShown = false;
   private elevenLabsFailShown = false;
 
   // Pure JS base64 encoder — works reliably in Hermes (unlike btoa for binary)
@@ -411,6 +442,139 @@ class VoiceEngineService {
     return parts.join('');
   }
 
+  private async speakWithCantoneseAI(text: string, apiKey: string): Promise<void> {
+    try {
+      console.log('[VoiceEngine] cantonese.ai: starting request...');
+      const settings = await getCantoneseAiTtsSettings();
+      const language = await getVoiceLanguage();
+
+      const requestBody = buildCantoneseTtsBody({
+        text,
+        apiKey,
+        voiceId: settings.voiceId,
+        modelId: settings.modelId,
+        speed: settings.speed,
+        pitch: settings.pitch,
+        language: language.cantoneseAiLanguage,
+        outputExtension: 'mp3',
+      });
+
+      const requestAudio = () => new Promise<ArrayBuffer>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', CANTONESEAI_TTS_URL);
+          // cantonese.ai authenticates via api_key in the body; send the header too
+          // so a Bearer-style gateway also succeeds.
+          xhr.setRequestHeader('Authorization', `Bearer ${apiKey}`);
+          xhr.setRequestHeader('Content-Type', 'application/json');
+          xhr.responseType = 'arraybuffer';
+          xhr.timeout = CANTONESEAI_TTS_TIMEOUT_MS;
+
+          xhr.onload = () => {
+            console.log('[VoiceEngine] XHR status:', xhr.status, 'response type:', typeof xhr.response);
+            if (xhr.status !== 200) {
+              // Try to read error as text
+              try {
+                const decoder = new TextDecoder();
+                const errText = decoder.decode(new Uint8Array(xhr.response));
+                reject(new Error(`HTTP ${xhr.status}: ${errText.slice(0, 200)}`));
+              } catch {
+                reject(new Error(`HTTP ${xhr.status}`));
+              }
+              return;
+            }
+            if (!xhr.response || !(xhr.response instanceof ArrayBuffer)) {
+              reject(new Error(`Invalid response type: ${typeof xhr.response}`));
+              return;
+            }
+            resolve(xhr.response);
+          };
+          xhr.onerror = () => reject(new Error('Network error'));
+          xhr.ontimeout = () => reject(new Error('Request timeout'));
+
+          xhr.send(JSON.stringify(requestBody));
+        });
+
+      // Use XHR with arraybuffer responseType — most reliable binary method in RN Hermes
+      let arrayBuffer: ArrayBuffer;
+      try {
+        arrayBuffer = await requestAudio();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (CANTONESEAI_AUTH_FAILURE.test(message)) throw error;
+        console.warn('[VoiceEngine] cantonese.ai TTS retrying after:', message);
+        arrayBuffer = await requestAudio();
+      }
+
+      const bytes = new Uint8Array(arrayBuffer);
+      console.log('[VoiceEngine] cantonese.ai: received', bytes.length, 'bytes');
+
+      if (bytes.length === 0) {
+        throw new Error('Empty audio response');
+      }
+
+      await this.usePlaybackAudioMode(true);
+
+      // Encode to base64 using pure JS encoder (Hermes-safe, no btoa)
+      const base64Audio = VoiceEngineService.toBase64(bytes);
+      console.log('[VoiceEngine] cantonese.ai: base64 length:', base64Audio.length);
+
+      // Write to temp file and play
+      const audioFile = `${FileSystem.cacheDirectory}canto_tts_${Date.now()}.mp3`;
+      await FileSystem.writeAsStringAsync(audioFile, base64Audio, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const fileInfo = await FileSystem.getInfoAsync(audioFile);
+      console.log('[VoiceEngine] cantonese.ai: file size:', (fileInfo as { size?: number }).size);
+
+      await this.stopSound();
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: audioFile },
+        { shouldPlay: true },
+      );
+      this.sound = sound;
+      const playbackGeneration = this.playbackGeneration;
+      console.log('[VoiceEngine] cantonese.ai: playing!');
+      this.setState('speaking');
+
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if ('didJustFinish' in status && status.didJustFinish) {
+          sound.setOnPlaybackStatusUpdate(null);
+          this.finalizeSoundPlayback(sound, audioFile, playbackGeneration).catch((error) => {
+            console.warn('[VoiceEngine] Failed to finalize cantonese.ai playback:', error);
+          });
+        }
+      });
+    } catch (e: unknown) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      track('voice_tts_failed', { provider: 'cantoneseai', error_category: categorizeError(errMsg) });
+      console.warn('[VoiceEngine] cantonese.ai TTS failed:', errMsg);
+      const authFailed = CANTONESEAI_AUTH_FAILURE.test(errMsg);
+
+      if (authFailed) {
+        await SecureStore.deleteItemAsync(CANTONESEAI_KEY);
+      }
+
+      if (!this.cantoneseFailShown) {
+        this.cantoneseFailShown = true;
+        const { Alert } = require('react-native');
+        Alert.alert(
+          authFailed ? 'cantonese.ai Key Removed' : 'cantonese.ai TTS Error',
+          authFailed
+            ? 'Your cantonese.ai API key was rejected. I removed it and will use the system voice.'
+            : `cantonese.ai voice failed, so I skipped pronunciation instead of using the robotic system voice.\n\nError: ${errMsg}`,
+        );
+      }
+
+      if (authFailed) {
+        await this.speakWithSystem(text);
+        return;
+      }
+
+      await this.onSpeechDone();
+    }
+  }
+
   private async speakWithElevenLabs(text: string, apiKey: string): Promise<void> {
     try {
       console.log('[VoiceEngine] ElevenLabs: starting request...');
@@ -423,12 +587,10 @@ class VoiceEngineService {
           xhr.setRequestHeader('xi-api-key', apiKey);
           xhr.setRequestHeader('Content-Type', 'application/json');
           xhr.responseType = 'arraybuffer';
-          xhr.timeout = ELEVENLABS_TTS_TIMEOUT_MS;
+          xhr.timeout = CANTONESEAI_TTS_TIMEOUT_MS;
 
           xhr.onload = () => {
-            console.log('[VoiceEngine] XHR status:', xhr.status, 'response type:', typeof xhr.response);
             if (xhr.status !== 200) {
-              // Try to read error as text
               try {
                 const decoder = new TextDecoder();
                 const errText = decoder.decode(new Uint8Array(xhr.response));
@@ -459,13 +621,12 @@ class VoiceEngineService {
           }));
         });
 
-      // Use XHR with arraybuffer responseType — most reliable binary method in RN Hermes
       let arrayBuffer: ArrayBuffer;
       try {
         arrayBuffer = await requestAudio();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (ELEVENLABS_AUTH_FAILURE.test(message)) throw error;
+        if (CANTONESEAI_AUTH_FAILURE.test(message)) throw error;
         console.warn('[VoiceEngine] ElevenLabs TTS retrying after:', message);
         arrayBuffer = await requestAudio();
       }
@@ -479,18 +640,11 @@ class VoiceEngineService {
 
       await this.usePlaybackAudioMode(true);
 
-      // Encode to base64 using pure JS encoder (Hermes-safe, no btoa)
       const base64Audio = VoiceEngineService.toBase64(bytes);
-      console.log('[VoiceEngine] ElevenLabs: base64 length:', base64Audio.length);
-
-      // Write to temp file and play
       const audioFile = `${FileSystem.cacheDirectory}el_tts_${Date.now()}.mp3`;
       await FileSystem.writeAsStringAsync(audioFile, base64Audio, {
         encoding: FileSystem.EncodingType.Base64,
       });
-
-      const fileInfo = await FileSystem.getInfoAsync(audioFile);
-      console.log('[VoiceEngine] ElevenLabs: file size:', (fileInfo as { size?: number }).size);
 
       await this.stopSound();
       const { sound } = await Audio.Sound.createAsync(
@@ -499,7 +653,6 @@ class VoiceEngineService {
       );
       this.sound = sound;
       const playbackGeneration = this.playbackGeneration;
-      console.log('[VoiceEngine] ElevenLabs: playing!');
       this.setState('speaking');
 
       sound.setOnPlaybackStatusUpdate((status) => {
@@ -514,7 +667,7 @@ class VoiceEngineService {
       const errMsg = e instanceof Error ? e.message : String(e);
       track('voice_tts_failed', { provider: 'elevenlabs', error_category: categorizeError(errMsg) });
       console.warn('[VoiceEngine] ElevenLabs TTS failed:', errMsg);
-      const authFailed = ELEVENLABS_AUTH_FAILURE.test(errMsg);
+      const authFailed = CANTONESEAI_AUTH_FAILURE.test(errMsg);
 
       if (authFailed) {
         await SecureStore.deleteItemAsync(ELEVENLABS_KEY);
@@ -595,7 +748,7 @@ class VoiceEngineService {
       this.clearListeningTimers();
       this.clearPostTtsTimer();
       this.latestTranscript = '';
-      await this.finishElevenLabsRecording('cancel');
+      await this.finishApiRecording('cancel');
       if (!options.keepPlayback) {
         await this.stopTts();
         await this.stopSound();
@@ -641,7 +794,7 @@ class VoiceEngineService {
     this.clearListeningTimers();
     this.clearPostTtsTimer();
     this.latestTranscript = '';
-    await this.finishElevenLabsRecording('cancel');
+    await this.finishApiRecording('cancel');
     await this.stopRecognition('cancel');
     await this.stopSound();
     await this.stopTts();
@@ -649,20 +802,26 @@ class VoiceEngineService {
   }
 
   private async useRecordingAudioMode(): Promise<void> {
+    const speakerphone = await isSpeakerphoneEnabled().catch(() => true);
     await Audio.setAudioModeAsync({
       allowsRecordingIOS: true,
       interruptionModeIOS: InterruptionModeIOS.DoNotMix,
       playsInSilentModeIOS: true,
       staysActiveInBackground: false,
+      // Route capture/monitoring through the loudspeaker rather than the earpiece
+      // so hands-free (car, desk) works without holding the phone up.
+      playThroughEarpieceAndroid: !speakerphone,
     });
   }
 
   private async usePlaybackAudioMode(staysActiveInBackground: boolean): Promise<void> {
+    const speakerphone = await isSpeakerphoneEnabled().catch(() => true);
     await Audio.setAudioModeAsync({
       allowsRecordingIOS: false,
       interruptionModeIOS: InterruptionModeIOS.DuckOthers,
       playsInSilentModeIOS: true,
       staysActiveInBackground,
+      playThroughEarpieceAndroid: !speakerphone,
     });
   }
 
@@ -676,7 +835,7 @@ class VoiceEngineService {
       this.clearPostTtsTimer();
       this.continuousMode = false;
       this.latestTranscript = '';
-      await this.finishElevenLabsRecording('cancel');
+      await this.finishApiRecording('cancel');
       try {
         await Voice.destroy();
       } catch {
@@ -783,8 +942,8 @@ class VoiceEngineService {
 
     this.continuousMode = false;
     this.latestTranscript = '';
-    if (this.recordingProvider === 'elevenlabs' || this.recording) {
-      await this.finishElevenLabsRecording('noSpeech');
+    if (this.recordingProvider !== null || this.recording) {
+      await this.finishApiRecording('noSpeech');
       return;
     }
     await this.stopRecognition('cancel');
@@ -811,7 +970,7 @@ class VoiceEngineService {
     }
 
     this.continuousMode = false;
-    await this.finishElevenLabsRecording(this.speechStarted ? 'stuck' : 'noSpeech');
+    await this.finishApiRecording(this.speechStarted ? 'stuck' : 'noSpeech');
     await this.stopRecognition('cancel');
     this.clearListeningTimers();
     this.notifyError(
@@ -835,8 +994,8 @@ class VoiceEngineService {
       this.transcriptListeners.forEach((l) => l(finalText, true));
     }
 
-    if (this.recordingProvider === 'elevenlabs' || this.recording) {
-      await this.finishElevenLabsRecording(reason === 'manual' ? 'manual' : 'silence');
+    if (this.recordingProvider !== null || this.recording) {
+      await this.finishApiRecording(reason === 'manual' ? 'manual' : 'silence');
       return;
     }
 
@@ -849,8 +1008,8 @@ class VoiceEngineService {
   private async handleSilenceTimeout(): Promise<void> {
     if (this._state !== 'listening') return;
 
-    if (this.recordingProvider === 'elevenlabs' || this.recording) {
-      await this.finishElevenLabsRecording('silence');
+    if (this.recordingProvider !== null || this.recording) {
+      await this.finishApiRecording('silence');
       return;
     }
 
@@ -970,7 +1129,7 @@ class VoiceEngineService {
     this.errorListeners.forEach((l) => l(message));
   }
 
-  private async startElevenLabsRecording(): Promise<void> {
+  private async startApiRecording(provider: 'elevenlabs' | 'cantoneseai'): Promise<void> {
     const permission = await Audio.requestPermissionsAsync();
     if (!permission.granted) {
       throw new Error('Microphone permission is required.');
@@ -987,13 +1146,13 @@ class VoiceEngineService {
       const recording = new Audio.Recording();
       recording.setProgressUpdateInterval(250);
       recording.setOnRecordingStatusUpdate((status) => {
-        this.handleElevenLabsRecordingStatus(status);
+        this.handleApiRecordingStatus(status);
       });
       await recording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
       await recording.startAsync();
       this.recording = recording;
-      this.recordingProvider = 'elevenlabs';
-      this.setInputProvider('elevenlabs');
+      this.recordingProvider = provider;
+      this.setInputProvider(provider);
       if (!this.listeningStartedAt) {
         this.resetListeningSession();
       }
@@ -1002,22 +1161,22 @@ class VoiceEngineService {
     } catch (error) {
       this.recording = null;
       this.recordingProvider = null;
-      console.warn('[VoiceEngine] Failed to start ElevenLabs recording:', error);
+      console.warn('[VoiceEngine] Failed to start API recording:', error);
       this.notifyError(formatAudioError(error));
       this.setState('idle');
     }
   }
 
-  private handleElevenLabsRecordingStatus(status: RecordingStatus): void {
-    if (!this.recording || this.recordingProvider !== 'elevenlabs' || this.transcriptionInProgress) return;
+  private handleApiRecordingStatus(status: RecordingStatus): void {
+    if (!this.recording || this.recordingProvider === null || this.transcriptionInProgress) return;
     if (!status.isRecording) return;
 
     const elapsed = status.durationMillis || (Date.now() - this.listeningStartedAt);
     const metering = typeof status.metering === 'number' ? status.metering : null;
     if (metering === null) {
       if (!this.recordingHeardSpeech && elapsed >= NO_SPEECH_TIMEOUT_MS) {
-        this.enqueueOperation(() => this.finishElevenLabsRecording('noSpeech')).catch((error) => {
-          console.warn('[VoiceEngine] Failed to finish quiet ElevenLabs recording:', error);
+        this.enqueueOperation(() => this.finishApiRecording('noSpeech')).catch((error) => {
+          console.warn('[VoiceEngine] Failed to finish quiet cantonese.ai recording:', error);
         });
       }
       return;
@@ -1031,8 +1190,8 @@ class VoiceEngineService {
     }
 
     if (!this.recordingHeardSpeech && elapsed >= NO_SPEECH_TIMEOUT_MS) {
-      this.enqueueOperation(() => this.finishElevenLabsRecording('noSpeech')).catch((error) => {
-        console.warn('[VoiceEngine] Failed to finish no-speech ElevenLabs recording:', error);
+      this.enqueueOperation(() => this.finishApiRecording('noSpeech')).catch((error) => {
+        console.warn('[VoiceEngine] Failed to finish no-speech cantonese.ai recording:', error);
       });
       return;
     }
@@ -1051,16 +1210,17 @@ class VoiceEngineService {
     }
 
     if (Date.now() - this.recordingSilentSince >= VoiceEngineService.SILENCE_TIMEOUT_MS) {
-      this.enqueueOperation(() => this.finishElevenLabsRecording('silence')).catch((error) => {
-        console.warn('[VoiceEngine] Failed to finish ElevenLabs recording:', error);
+      this.enqueueOperation(() => this.finishApiRecording('silence')).catch((error) => {
+        console.warn('[VoiceEngine] Failed to finish cantonese.ai recording:', error);
       });
     }
   }
 
-  private async finishElevenLabsRecording(reason: 'cancel' | 'manual' | 'silence' | 'noSpeech' | 'stuck'): Promise<void> {
+  private async finishApiRecording(reason: 'cancel' | 'manual' | 'silence' | 'noSpeech' | 'stuck'): Promise<void> {
     const recording = this.recording;
     if (!recording || this.transcriptionInProgress) return;
 
+    const provider = this.recordingProvider ?? 'cantoneseai';
     this.transcriptionInProgress = true;
     this.recording = null;
     this.recordingProvider = null;
@@ -1073,7 +1233,7 @@ class VoiceEngineService {
     try {
       await recording.stopAndUnloadAsync();
     } catch (error) {
-      console.warn('[VoiceEngine] Failed to stop ElevenLabs recording:', error);
+      console.warn('[VoiceEngine] Failed to stop API recording:', error);
     }
 
     if (
@@ -1106,28 +1266,45 @@ class VoiceEngineService {
 
     this.setState('thinking');
     try {
-      const apiKey = await SecureStore.getItemAsync(ELEVENLABS_KEY);
-      if (!apiKey?.trim()) {
-        throw new ElevenLabsSpeechError('ElevenLabs API key is missing.');
+      const language = await getVoiceLanguage();
+      let text: string;
+
+      if (provider === 'elevenlabs') {
+        const apiKey = await SecureStore.getItemAsync(ELEVENLABS_KEY);
+        if (!apiKey?.trim()) {
+          throw new ElevenLabsSpeechError('ElevenLabs API key is missing.');
+        }
+        text = await transcribeWithElevenLabs(audioUri, apiKey, language.languageCode);
+      } else {
+        const apiKey = await SecureStore.getItemAsync(CANTONESEAI_KEY);
+        if (!apiKey?.trim()) {
+          throw new CantoneseAiSpeechError('cantonese.ai API key is missing.');
+        }
+        text = await transcribeWithCantoneseAI(audioUri, apiKey, language.languageCode);
       }
 
-      const language = await getVoiceLanguage();
-      const text = await transcribeWithElevenLabs(audioUri, apiKey, language.languageCode);
       if (text) {
         this.transcriptListeners.forEach((l) => l(text, true));
       } else {
         this.notifyError('I could not hear enough speech to transcribe.');
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'ElevenLabs transcription failed.';
-      console.warn('[VoiceEngine] ElevenLabs STT failed:', message);
+      const message = error instanceof Error ? error.message : 'Speech transcription failed.';
+      console.warn(`[VoiceEngine] ${provider} STT failed:`, message);
 
-      if (error instanceof ElevenLabsSpeechError && error.authFailure) {
-        await SecureStore.setItemAsync(ELEVENLABS_STT_ENABLED, 'false');
+      const authFailure =
+        (error instanceof CantoneseAiSpeechError && error.authFailure)
+        || (error instanceof ElevenLabsSpeechError && error.authFailure);
+      if (authFailure) {
+        await SecureStore.setItemAsync(
+          provider === 'elevenlabs' ? ELEVENLABS_STT_ENABLED : CANTONESEAI_STT_ENABLED,
+          'false',
+        );
+        const providerLabel = provider === 'elevenlabs' ? 'ElevenLabs' : 'cantonese.ai';
         const { Alert } = require('react-native');
         Alert.alert(
-          'ElevenLabs Speech Disabled',
-          'Your key was rejected for speech-to-text. I disabled ElevenLabs transcription and will use system dictation next time.',
+          `${providerLabel} Speech Disabled`,
+          `Your key was rejected for speech-to-text. I disabled ${providerLabel} transcription and will use system dictation next time.`,
         );
       }
 
